@@ -1,0 +1,10 @@
+# PDF 提取流水线（已在 Windows + Python 3.12 验证）
+# 也可不装这些包，直接让 scripts/pdf.py 自动 bootstrap 到 ~/.dsh/pdfskill
+pymupdf==1.28.2
+rapidocr-onnxruntime==1.4.4
+onnxruntime==1.31.0
+numpy==2.5.4
+opencv-python==5.0.0.93
+pillow==13.0.0
+openpyxl==3.1.5
+python-docx==1.2.0
