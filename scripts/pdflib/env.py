@@ -235,7 +235,7 @@ def ensure(work_dir: Path, explicit_python=None, install=True, verbose=True):
     # 2) 找基础解释器，在 Temp 内建 venv
     bases = [p for p in _candidate_pythons(explicit_python) if Path(p).exists()]
     if not bases:
-        raise EnvError("no Python found on this machine; install Python 3.10+ or pass --python")
+        raise EnvError("no Python found on this machine; install Python 3.12+ (tested) or pass --python")
 
     temp_root = skill_home()
     temp_root.mkdir(parents=True, exist_ok=True)
@@ -283,4 +283,4 @@ def ensure(work_dir: Path, explicit_python=None, install=True, verbose=True):
                 "checked_at": time.strftime("%Y-%m-%d %H:%M:%S")}
         _write_state(work_dir, info)
         return Env(base, pkgs, "fixed-target", work_dir)
-    raise EnvError("imports still failing after install; check Python version (3.10+)")
+    raise EnvError("imports still failing after install; check Python version (tested 3.12; 3.13 not supported by rapidocr-onnxruntime)")

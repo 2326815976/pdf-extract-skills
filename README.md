@@ -27,9 +27,10 @@ PDF ──info──> text_based ──> PyMuPDF 直抽文本/表格 ──┐
 
 ## 环境要求
 
-- Python **3.10+**（已在 Python 3.12.7 + Windows 验证）
-- 首次运行需联网安装依赖（约数十 MB，装到 `~/.dsh/pdfskill`）
-- 可选：`pip install -r requirements.txt` 手动安装（版本为已验证组合）
+- Python **3.12**（唯一验证版本；`rapidocr-onnxruntime 1.4.4` 要求 `<3.13`，因此 3.13 暂不可用）
+- Python 3.10/3.11 可尝试自动安装（依赖会自动解析到可用版本），但未经验证
+- 首次运行需联网安装依赖（装到 `~/.dsh/pdfskill`）
+- 可选：`pip install -r requirements.txt` 手动安装（该文件是 Python 3.12 的已验证组合）
 
 ## 安装
 

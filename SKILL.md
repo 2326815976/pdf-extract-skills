@@ -170,7 +170,7 @@ $PY = "python"                     # 或解释器完整路径；DSH 环境用 lo
 ## 7. 排错
 
 - `ready:false`：看缺哪个包；删 `%USERPROFILE%\.dsh\pdfskill` 后重跑 doctor 重装。
-- 找不到 Python：`--python "C:\...\python.exe"`（3.10+）。
+- 找不到 Python：`--python "C:\...\python.exe"`（已验证 3.12；3.13 暂不兼容 rapidocr-onnxruntime）。
 - OCR 全是乱码：方向判错，删输出目录里的 `pages/orientation.json` 或加 `--recheck-orient` 重跑；仍不对就看 `references/workflow.md` 手动处理。
 - `compare` 一致率 <70%：先按输出提示调行/列参数，最多 1 轮；仍不行就是数据分份问题（见第 6 节第 1 条）。
 - 更细的决策树、参数组合、报告模板：`references/workflow.md`。

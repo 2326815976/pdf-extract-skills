@@ -1,5 +1,7 @@
-# PDF 提取流水线（已在 Windows + Python 3.12 验证）
-# 也可不装这些包，直接让 scripts/pdf.py 自动 bootstrap 到 ~/.dsh/pdfskill
+# 已验证组合：Windows + Python 3.12.7
+# 注意：numpy>=2.5 / pillow>=13 / onnxruntime>=1.31 要求 Python 3.11+，
+#       其中 numpy 2.5 要求 3.12+；rapidocr-onnxruntime 1.4.4 不支持 Python 3.13。
+# 其他 Python 版本可跳过本文件，让 scripts/pdf.py 自动解析安装。
 pymupdf==1.28.2
 rapidocr-onnxruntime==1.4.4
 onnxruntime==1.31.0
