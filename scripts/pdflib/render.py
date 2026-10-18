@@ -138,7 +138,7 @@ def detect_orientation(image, rec=None, ocr=None):
 
 
 def prepare_upright_images(pdf_path, out_dir, dpi=None, max_pages=None, rec=None, ocr=None,
-                           cache_path=None, force_recheck=False):
+                           cache_path=None, force_recheck=False, page_indices=None):
     """按页渲染并自动摆正，返回 [{page, path, angle, score, detail, width, height}]。"""
     import json
     from pathlib import Path
@@ -158,11 +158,28 @@ def prepare_upright_images(pdf_path, out_dir, dpi=None, max_pages=None, rec=None
     doc = pymupdf.open(str(pdf_path))
     dpi = dpi or 200
     results = []
-    for i in range(len(doc)):
+    indices = range(len(doc)) if page_indices is None else sorted(set(page_indices))
+    for i in indices:
+        if i < 0 or i >= len(doc):
+            continue
         if max_pages and i >= max_pages:
-            break
-        image = render_page(doc, i, dpi=dpi)
+            continue
+        dst = out_dir / ("page-%02d.png" % (i + 1))
         key = str(i + 1)
+        if key in cache and not force_recheck and dst.exists():
+            with Image.open(dst) as existing:
+                width, height = existing.size
+            results.append({
+                "page": i + 1,
+                "path": str(dst),
+                "angle": int(cache[key]),
+                "score": None,
+                "detail": {"cached": True},
+                "width": width,
+                "height": height,
+            })
+            continue
+        image = render_page(doc, i, dpi=dpi)
         angle, score, detail = 0, None, {}
         if key in cache and not force_recheck:
             angle = int(cache[key])
@@ -170,7 +187,6 @@ def prepare_upright_images(pdf_path, out_dir, dpi=None, max_pages=None, rec=None
         elif rec is not None or ocr is not None:
             angle, score, detail = detect_orientation(image, rec=rec, ocr=ocr)
         upright = rotate(image, angle)
-        dst = out_dir / ("page-%02d.png" % (i + 1))
         upright.save(dst)
         cache[key] = angle
         results.append({

@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 """PDF 提取 Skill 的命令行入口。
 
-所有子命令都会先做环境自检：缺依赖时自动安装到固定目录
-（%USERPROFILE%/.dsh/pdfskill，可用 PDFSKILL_HOME 覆盖），换工作目录不用重装。
+所有子命令都会先做环境自检：优先复用现有解释器和 venv，缺依赖时才安装到
+平台用户缓存目录（Windows: %LOCALAPPDATA%/pdf-extract-skill，可用 PDFSKILL_HOME 覆盖）。
 用法：
   python pdf.py doctor
   python pdf.py info <pdf>
-  python pdf.py extract <pdf> [-o OUTDIR] [--formats md,txt,json,xlsx,docx,csv] [--dpi 200] [--max-pages N]
+  python pdf.py extract <pdf> [-o OUTDIR] [--formats md,txt,json,xlsx,docx,csv]
   python pdf.py convert <pdf> --to xlsx|docx|md|csv|txt [ -o OUTDIR]
+  python pdf.py extract <pdf> --profile auto|text|table|visual --table-mode auto|force|off
+  python pdf.py convert <pdf> --to docx --docx-mode auto|flow|layout|table|image
   python pdf.py compare <提取结果.csv/xlsx/md/json> <基准.xlsx/csv> [-o REPORT.md]
 """
 from __future__ import annotations
@@ -79,21 +81,30 @@ def cmd_info(args):
     print(json.dumps(detect_mod.detect(args.pdf, max_pages=args.max_pages), ensure_ascii=True, indent=2))
 
 
-def cmd_extract(args):
+def _execute_extract(args, conversion=False):
     from pdflib import extract as extract_mod
     formats = tuple(f.strip().lower() for f in args.formats.split(",") if f.strip())
     out_dir = Path(args.out or (_workdir(args) / (Path(args.pdf).stem + "_extract")))
     report = extract_mod.run(args.pdf, out_dir, formats=formats, dpi=args.dpi,
                              max_pages=args.max_pages, force_ocr=args.force_ocr,
-                             recheck_orient=args.recheck_orient)
+                             recheck_orient=args.recheck_orient,
+                             profile=args.profile, table_mode=args.table_mode,
+                             ocr_mode=args.ocr_mode, docx_mode=args.docx_mode,
+                             conversion=conversion)
     print(json.dumps(report, ensure_ascii=True, indent=2))
+    if conversion and report.get("verification_prompt"):
+        print("[next] " + report["verification_prompt"], file=sys.stderr, flush=True)
+
+
+def cmd_extract(args):
+    _execute_extract(args, conversion=False)
 
 
 def cmd_convert(args):
     fmt = args.to.lower()
     args.formats = {"docx": "docx", "xlsx": "xlsx", "md": "md", "markdown": "md",
                     "csv": "csv", "txt": "txt", "text": "txt"}.get(fmt, fmt)
-    cmd_extract(args)
+    _execute_extract(args, conversion=True)
 
 
 def _parse_cols(spec):
@@ -257,7 +268,7 @@ def build_parser():
     sp.add_argument("--max-pages", type=int)
     sp.set_defaults(func=cmd_info)
 
-    sp = sub.add_parser("extract", help="提取全部内容并导出多格式")
+    sp = sub.add_parser("extract", help="读取/提取内容；未指定格式时优先 md,txt")
     sp.add_argument("pdf")
     sp.add_argument("-o", "--out", help="输出目录")
     sp.add_argument("--formats", default="md,txt,json,xlsx,docx,csv")
@@ -265,9 +276,15 @@ def build_parser():
     sp.add_argument("--max-pages", type=int)
     sp.add_argument("--force-ocr", action="store_true")
     sp.add_argument("--recheck-orient", action="store_true", help="忽略方向缓存，逐页重新判定")
+    sp.add_argument("--profile", choices=("auto", "text", "table", "visual"), default="auto",
+                    help="提取目标：auto 自动路由，text 正文优先，table 表格优先，visual 版面优先")
+    sp.add_argument("--table-mode", choices=("auto", "force", "off"), default="auto")
+    sp.add_argument("--ocr-mode", choices=("auto", "force", "off"), default="auto")
+    sp.add_argument("--docx-mode", choices=("auto", "flow", "layout", "table", "image"),
+                    default="auto", help="Word 输出策略")
     sp.set_defaults(func=cmd_extract)
 
-    sp = sub.add_parser("convert", help="转换：--to docx|xlsx|md|csv|txt")
+    sp = sub.add_parser("convert", help="格式转换（速度优先）：--to docx|xlsx|md|csv|txt")
     sp.add_argument("pdf")
     sp.add_argument("--to", required=True)
     sp.add_argument("-o", "--out")
@@ -275,6 +292,11 @@ def build_parser():
     sp.add_argument("--max-pages", type=int)
     sp.add_argument("--force-ocr", action="store_true")
     sp.add_argument("--recheck-orient", action="store_true", help="忽略方向缓存，逐页重新判定")
+    sp.add_argument("--profile", choices=("auto", "text", "table", "visual"), default="auto")
+    sp.add_argument("--table-mode", choices=("auto", "force", "off"), default="auto")
+    sp.add_argument("--ocr-mode", choices=("auto", "force", "off"), default="auto")
+    sp.add_argument("--docx-mode", choices=("auto", "flow", "layout", "table", "image"),
+                    default="auto")
     sp.set_defaults(func=cmd_convert)
 
     sp = sub.add_parser("compare", help="提取结果与基准比对")

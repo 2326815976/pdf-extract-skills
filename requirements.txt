@@ -10,3 +10,5 @@ opencv-python==5.0.0.93
 pillow==13.0.0
 openpyxl==3.1.5
 python-docx==1.2.0
+pdf2docx==0.5.8
+opencv-python-headless==5.0.0.93

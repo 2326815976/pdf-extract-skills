@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """运行环境自检与自动安装。
 
-安装位置固定：%USERPROFILE%/.dsh/pdfskill（可用环境变量 PDFSKILL_HOME 覆盖），
-换工作目录/项目不用重新下载；工作目录只放产物。
+安装位置固定到用户级缓存目录（Windows 为 %LOCALAPPDATA%/pdf-extract-skill，
+可通过 PDFSKILL_HOME 覆盖），换工作目录/项目不用重新下载；工作目录只放产物。
 
 策略（按顺序）：
 1. 显式指定 --python / PDFSKILL_PYTHON；
-2. 固定目录里上次记录且依赖齐全的解释器（env.json）；
-3. 本机已知环境（skill 同级 tool/venv、旧版 <work>/Temp/pdfskill）；
+2. 新缓存目录或旧版记录中依赖齐全的解释器；
+3. 本地已有 venv（PDFSKILL_VENVS、skill 邻近 tool/venv、旧工作目录）；
 4. 当前解释器、DSH 运行时自带 Python、PATH 里的 python/py；
 5. 都没有齐全依赖 → 在固定目录建 venv 并 pip 安装。
 """
@@ -31,17 +31,19 @@ MODULES = {
     "PIL": "图像读写（Pillow）",
     "openpyxl": "Excel 导出与读取",
     "docx": "Word 导出（python-docx）",
+    "pdf2docx": "复杂版面 PDF 转 Word",
 }
 # 必需包（pymupdf + OCR + 基础图像）
 CORE_PACKAGES = ["pymupdf", "rapidocr-onnxruntime", "numpy", "pillow"]
 # 可选包（缺了会降级：xlsx/docx 导出不可用）
-OPTIONAL_PACKAGES = ["openpyxl", "python-docx"]
+OPTIONAL_PACKAGES = ["openpyxl", "python-docx", "pdf2docx"]
 
 CHECK_CODE = (
     "import json,sys\n"
     "res={}\n"
     "for mod,key in [('pymupdf','pymupdf'),('rapidocr_onnxruntime','rapidocr'),"
-    "('numpy','numpy'),('cv2','cv2'),('PIL','pillow'),('openpyxl','openpyxl'),('docx','docx')]:\n"
+    "('numpy','numpy'),('cv2','cv2'),('PIL','pillow'),('openpyxl','openpyxl'),"
+    "('docx','docx'),('pdf2docx','pdf2docx')]:\n"
     "    try:\n"
     "        m=__import__(mod)\n"
     "        res[key]=getattr(m,'__version__',None) or 'ok'\n"
@@ -77,7 +79,8 @@ class Env:
             "source": self.source,
             "work_dir": str(self.work_dir),
             "packages": self.packages,
-            "missing_optional": [m for m in ("openpyxl", "docx") if not self.packages.get(m)],
+            "missing_optional": [m for m in ("openpyxl", "docx", "pdf2docx")
+                                 if not self.packages.get(m)],
         }
 
 
@@ -128,21 +131,27 @@ def _candidate_pythons(explicit=None):
 
 
 def _known_venvs():
-    """本机可能已有完整环境的 venv（存在即用，省一次下载）。"""
+    """本地可能已有完整环境的 venv（存在即用，省一次下载）。"""
     home = Path(os.environ.get("USERPROFILE") or Path.home())
     cands = []
     extra = os.environ.get("PDFSKILL_VENVS")
     if extra:
         cands.extend(Path(p) for p in extra.split(os.pathsep) if p)
-    # 与本 Skill 同级的 tool/venv（开发者本机已有的环境）
     try:
-        skill_root = Path(__file__).resolve().parents[3]
+        skill_root = Path(__file__).resolve().parents[2]
+        # skills/tool/venv
         cands.append(skill_root.parent / "tool" / "venv" / "Scripts" / "python.exe")
         cands.append(skill_root.parent / "tool" / "venv" / "bin" / "python")
+        # <project>/tool/venv
+        cands.append(skill_root.parent.parent / "tool" / "venv" / "Scripts" / "python.exe")
+        cands.append(skill_root.parent.parent / "tool" / "venv" / "bin" / "python")
     except Exception:
         pass
     cands.append(skill_home() / "venv" / "Scripts" / "python.exe")
     cands.append(skill_home() / "venv" / "bin" / "python")
+    # 只复用旧目录中的现有环境，不把新依赖安装到旧目录
+    cands.append(home / ".dsh" / "pdfskill" / "venv" / "Scripts" / "python.exe")
+    cands.append(home / ".dsh" / "pdfskill" / "venv" / "bin" / "python")
     # 兼容旧版本：曾装在 <某工作目录>/Temp/pdfskill
     cands.append(Path.cwd() / "Temp" / "pdfskill" / "venv" / "Scripts" / "python.exe")
     cands.append(Path.cwd() / "Temp" / "pdfskill" / "venv" / "bin" / "python")
@@ -150,31 +159,58 @@ def _known_venvs():
 
 
 def skill_home() -> Path:
-    """固定的环境安装目录（换工作目录不用重装）。
+    """用户级环境缓存目录（换工作目录不用重装）。
 
-    优先级：环境变量 PDFSKILL_HOME > 用户目录 ~/.dsh/pdfskill。
-    旧版本装在 <工作目录>/Temp/pdfskill 的环境不再使用，但会被 _known_venvs 兼顾问到。
+    优先级：PDFSKILL_HOME > 平台用户缓存目录/pdf-extract-skill。
+    旧版 .dsh 记录只作为现有解释器的迁移线索，不会作为新安装目录。
     """
     override = os.environ.get("PDFSKILL_HOME")
     if override:
         return Path(override).expanduser()
-    home = Path(os.environ.get("USERPROFILE") or Path.home())
-    return home / ".dsh" / "pdfskill"
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA") or
+                    (Path(os.environ.get("USERPROFILE") or Path.home()) / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Caches"
+    else:
+        base = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache"))
+    return base / "pdf-extract-skill"
 
 
 def _state_path(work_dir=None) -> Path:
     return skill_home() / "env.json"
 
 
-def _read_state(work_dir: Path):
-    p = _state_path(work_dir)
-    if not p.exists():
-        return None
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        return data.get("python")
-    except Exception:
-        return None
+def _state_paths(work_dir: Path):
+    home = Path(os.environ.get("USERPROFILE") or Path.home())
+    candidates = [
+        _state_path(work_dir),
+        home / ".dsh" / "pdfskill" / "env.json",
+        Path(work_dir).resolve() / "Temp" / "pdfskill" / "env.json",
+    ]
+    seen = set()
+    output = []
+    for path in candidates:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            output.append(path)
+    return output
+
+
+def _recorded_pythons(work_dir: Path):
+    found = []
+    for path in _state_paths(work_dir):
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        python = data.get("python")
+        if python and python not in found:
+            found.append(python)
+    return found
 
 
 def _write_state(work_dir: Path, info: dict):
@@ -204,17 +240,30 @@ def _pip_install(python: str, packages, work_dir: Path, log):
 
 
 def ensure(work_dir: Path, explicit_python=None, install=True, verbose=True):
-    """确保有可用的解释器与依赖；需要时在 <work>/Temp/pdfskill 建 venv 并安装。"""
+    """确保有可用的解释器与依赖；需要时在用户级缓存目录安装。"""
     work_dir = Path(work_dir).resolve()
     log = (lambda m: print("[env] " + m, file=sys.stderr)) if verbose else (lambda m: None)
 
-    # 1) 已知完整环境（上次记录 / 本机已有 venv / 显式 / 当前 / 运行时）
-    for p in ([_read_state(work_dir)] + _known_venvs() + _candidate_pythons(explicit_python)):
+    # 1) 显式路径 > 已记录环境 > 本地已有 venv > 当前解释器/PATH
+    preferred = [
+        explicit_python,
+        os.environ.get("PDFSKILL_PYTHON"),
+        *_recorded_pythons(work_dir),
+        *_known_venvs(),
+        *_candidate_pythons(),
+    ]
+    seen = set()
+    for p in preferred:
         if not p:
             continue
+        if p in seen:
+            continue
+        seen.add(p)
         ok, pkgs = _probe(p)
         if ok:
-            missing = [pkg for mod, pkg in (("openpyxl", "openpyxl"), ("docx", "python-docx"))
+            missing = [pkg for mod, pkg in (("openpyxl", "openpyxl"),
+                                            ("docx", "python-docx"),
+                                            ("pdf2docx", "pdf2docx"))
                        if not pkgs.get(mod)]
             if missing and install:
                 try:
@@ -232,10 +281,10 @@ def ensure(work_dir: Path, explicit_python=None, install=True, verbose=True):
     if not install:
         raise EnvError("no usable Python environment (missing pymupdf / rapidocr_onnxruntime) and auto-install is disabled")
 
-    # 2) 找基础解释器，在 Temp 内建 venv
+    # 2) 找基础解释器，在用户级缓存目录建 venv
     bases = [p for p in _candidate_pythons(explicit_python) if Path(p).exists()]
     if not bases:
-        raise EnvError("no Python found on this machine; install Python 3.12+ (tested) or pass --python")
+        raise EnvError("no Python found; install Python 3.12 or pass --python")
 
     temp_root = skill_home()
     temp_root.mkdir(parents=True, exist_ok=True)
@@ -265,8 +314,8 @@ def ensure(work_dir: Path, explicit_python=None, install=True, verbose=True):
             _write_state(work_dir, info)
             return Env(str(vpy), pkgs, "fixed-venv", work_dir)
 
-    # 3) 兜底：--target 安装到 Temp，靠 PYTHONPATH 生效
-    log("venv 方案不可用，改用 --target 安装到 Temp/pdfskill/site-packages")
+    # 3) 兜底：--target 安装到用户级缓存目录，靠 PYTHONPATH 生效
+    log("venv 方案不可用，改用 --target 安装到用户级缓存")
     site = temp_root / "site-packages"
     site.mkdir(parents=True, exist_ok=True)
     cmd = [base, "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "-q",
