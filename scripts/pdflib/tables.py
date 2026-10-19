@@ -220,6 +220,104 @@ def build_grid(lines, xs, ys, page_width=None):
     return grid
 
 
+def _vertical_border_exists(gray, xs, ys, row, boundary_column):
+    if gray is None or row < 0 or row >= len(ys) - 1:
+        return True
+    x = int(xs[boundary_column])
+    y0 = max(0, int(ys[row]) + 2)
+    y1 = min(gray.shape[0], int(ys[row + 1]) - 2)
+    if y1 <= y0:
+        return True
+    x0 = max(0, x - 2)
+    x1 = min(gray.shape[1], x + 3)
+    strip = gray[y0:y1, x0:x1]
+    if strip.size == 0:
+        return True
+    fraction = float((strip < 190).any(axis=1).mean())
+    return fraction >= 0.45
+
+
+def build_merged_grid(lines, xs, ys, gray, boundaries_by_column):
+    """构建合并单元格模型，返回矩形文本网格和 Word 合并区。"""
+    rows_count, cols_count = len(ys) - 1, len(xs) - 1
+    if rows_count <= 0 or cols_count <= 0:
+        return [], {"regions": []}
+    parent = list(range(rows_count * cols_count))
+
+    def find(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left, right):
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    def index(row, column):
+        return row * cols_count + column
+
+    for row in range(rows_count):
+        for column in range(cols_count):
+            if column + 1 < cols_count and not _vertical_border_exists(
+                    gray, xs, ys, row, column + 1):
+                union(index(row, column), index(row, column + 1))
+            if row + 1 < rows_count and (row + 1) not in boundaries_by_column[column]:
+                union(index(row, column), index(row + 1, column))
+
+    components = {}
+    for row in range(rows_count):
+        for column in range(cols_count):
+            components.setdefault(find(index(row, column)), []).append((row, column))
+
+    cell_region = {}
+    regions = []
+    for cells in components.values():
+        component_rows = [row for row, _ in cells]
+        component_columns = [column for _, column in cells]
+        top, bottom = min(component_rows), max(component_rows) + 1
+        left, right = min(component_columns), max(component_columns) + 1
+        rectangular = len(cells) == (bottom - top) * (right - left)
+        if rectangular:
+            region_index = len(regions)
+            regions.append({
+                "top": top,
+                "bottom": bottom,
+                "left": left,
+                "right": right,
+            })
+            for row, column in cells:
+                cell_region[(row, column)] = region_index
+        else:
+            for row, column in cells:
+                region_index = len(regions)
+                regions.append({
+                    "top": row,
+                    "bottom": row + 1,
+                    "left": column,
+                    "right": column + 1,
+                })
+                cell_region[(row, column)] = region_index
+
+    region_lines = {}
+    for line in lines:
+        row = _locate(line["cy"], ys)
+        column = _locate_col(line, xs)
+        if row is None or column is None:
+            continue
+        region_index = cell_region.get((row, column))
+        if region_index is not None:
+            region_lines.setdefault(region_index, []).append(line)
+
+    grid = [["" for _ in range(cols_count)] for _ in range(rows_count)]
+    for region_index, region in enumerate(regions):
+        text = _cell_text(region_lines.get(region_index, []))
+        if text:
+            grid[region["top"]][region["left"]] = text
+    return grid, {"regions": regions}
+
+
 def _looks_header_row(row):
     text = "".join(str(c) for c in row)
     hits = sum(1 for w in HEADER_WORDS if w in text)
@@ -371,9 +469,19 @@ def _shift_meta_after_header_merge(grid_meta, header_rows):
         if row < header_rows:
             continue
         shifted[(row - shift, column)] = (start - shift, end - shift)
+    shifted_regions = []
+    for region in grid_meta.get("regions") or []:
+        if region["top"] < header_rows:
+            continue
+        shifted_regions.append({
+            **region,
+            "top": region["top"] - shift,
+            "bottom": region["bottom"] - shift,
+        })
     return {
         "column_boundaries": grid_meta.get("column_boundaries"),
         "cell_spans": shifted,
+        "regions": shifted_regions,
     }
 
 
@@ -421,6 +529,25 @@ def reconstruct(lines, image):
             page_width=image.width if hasattr(image, "width") else None,
             gray=gray,
         )
+        initial_columns = max((len(row) for row in grid), default=0)
+        initial_cells = max(len(grid), 1) * max(initial_columns, 1)
+        initial_fill = (sum(1 for row in grid for cell in row if cell) /
+                        max(initial_cells, 1))
+        vertical_merge_candidates = sum(
+            1 for (_, _), (top, bottom) in grid_meta["cell_spans"].items()
+            if bottom - top > 1)
+        merged_grid_used = (
+            (initial_columns >= 10 and initial_fill < 0.28)
+            or (initial_columns >= 6 and vertical_merge_candidates >= 2)
+        )
+        merged_regions = []
+        if merged_grid_used:
+            merged_grid, merged_meta = build_merged_grid(
+                lines, xs, ys, gray, grid_meta["column_boundaries"])
+            merged_regions = merged_meta["regions"]
+            if merged_regions:
+                grid = merged_grid
+                grid_meta["regions"] = merged_regions
         merged_rows, header_rows = merge_leading_header_rows(grid, return_count=True)
         grid_meta = _shift_meta_after_header_merge(grid_meta, header_rows)
         rows = normalize_header_row(merged_rows)
@@ -430,6 +557,8 @@ def reconstruct(lines, image):
             total = len(rows) * len(rows[0])
             width = image.width if hasattr(image, "width") else max(xs)
             height = image.height if hasattr(image, "height") else max(ys)
+            table_width = max(xs[-1] - xs[0], 1)
+            table_height = max(ys[-1] - ys[0], 1)
             return {
                 "mode": "rules",
                 "rows": rows,
@@ -438,7 +567,18 @@ def reconstruct(lines, image):
                             "fill_ratio": round(filled / max(total, 1), 3),
                             "grid_width_ratio": round((xs[-1] - xs[0]) / max(width, 1), 3),
                             "grid_height_ratio": round((ys[-1] - ys[0]) / max(height, 1), 3),
+                            "table_aspect": round(table_height / table_width, 5),
+                            "column_ratios": [
+                                round((xs[index + 1] - xs[index]) / table_width, 5)
+                                for index in range(len(xs) - 1)
+                            ],
+                            "row_ratios": [
+                                round((ys[index + 1] - ys[index]) / table_height, 5)
+                                for index in range(len(ys) - 1)
+                            ],
                             "header_rows_merged": header_rows,
+                            "merged_cells": merged_regions,
+                            "merged_grid_used": merged_grid_used,
                             "sequence_repair": sequence_repair},
             }
     rows = build_rows_without_rules(lines)
@@ -492,7 +632,9 @@ def assess_candidate(rows, reconstruction, *, source_route="scan", mode="auto"):
                     and width_ratio >= 0.25 and height_ratio >= 0.12
                     and rectangular >= 0.75)
         reason = "框线表格" if accepted else "框线覆盖或填充率不足"
-        layout_preferred = bool(accepted and columns >= 10 and fill < 0.28)
+        layout_preferred = bool(
+            accepted and columns >= 10 and fill < 0.28
+            and not quality.get("merged_grid_used"))
     else:
         score = (0.15 + min(rectangular, 1.0) * 0.20 +
                  min(fill, 0.9) * 0.25 +

@@ -448,17 +448,26 @@ def _write_flow_docx(path, stem, info, pages, pdf_path, max_pages=None):
 
 def _write_table_docx(path, stem, pages):
     from docx import Document
+    from docx.enum.table import WD_ROW_HEIGHT_RULE
     from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.shared import Pt
+    from docx.shared import Cm, Pt
 
     table_rows = [table for page in pages for table in page_tables(page)]
     max_columns = max((max((len(row) for row in table), default=0)
                        for table in table_rows), default=0)
+    complex_form = any(
+        (page.get("quality") or {}).get("merged_grid_used") for page in pages)
     document = Document()
-    _configure_document(document, landscape=max_columns > 6)
-    writable = [(page, table) for page in pages for table in page_tables(page)]
+    _configure_document(document, landscape=max_columns > 6 and not complex_form)
+    section = document.sections[0]
+    writable = []
+    for page in pages:
+        page_merges = page.get("merges") or []
+        for table_index, table in enumerate(page_tables(page)):
+            merges = page_merges[table_index] if table_index < len(page_merges) else []
+            writable.append((page, table, merges))
     last_page_number = None
-    for table_index, (page, rows) in enumerate(writable):
+    for table_index, (page, rows, merges) in enumerate(writable):
         page_break_pending = bool(table_index and page["page"] != last_page_number)
         if page["page"] != last_page_number:
             outside_blocks = page.get("outside_blocks")
@@ -496,17 +505,59 @@ def _write_table_docx(path, stem, pages):
         columns = max(len(row) for row in rows)
         table = document.add_table(rows=len(rows), cols=columns)
         table.style = "Table Grid"
-        table.autofit = True
+        quality = page.get("quality") or {}
+        column_ratios = quality.get("column_ratios") or []
+        row_ratios = quality.get("row_ratios") or []
+        fixed_form_layout = bool(
+            quality.get("merged_grid_used")
+            and len(column_ratios) == columns
+            and len(row_ratios) == len(rows))
+        if fixed_form_layout:
+            table.autofit = False
+            content_width_cm = (section.page_width.cm
+                                - section.left_margin.cm
+                                - section.right_margin.cm)
+            max_height_cm = (section.page_height.cm
+                             - section.top_margin.cm
+                             - section.bottom_margin.cm - 2.2)
+            source_height_cm = content_width_cm * float(
+                quality.get("table_aspect") or 1.0)
+            table_height_cm = min(max_height_cm, source_height_cm)
+            for column_index, ratio in enumerate(column_ratios):
+                width = Cm(content_width_cm * float(ratio))
+                table.columns[column_index].width = width
+                for row in table.rows:
+                    row.cells[column_index].width = width
+            for row_index, ratio in enumerate(row_ratios):
+                table.rows[row_index].height = Cm(table_height_cm * float(ratio))
+                table.rows[row_index].height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
+        else:
+            table.autofit = True
+        table_font_size = 6.5 if columns >= 12 else 7.2
         for row_index, row in enumerate(rows):
             for column_index in range(columns):
                 cell = table.cell(row_index, column_index)
                 cell.text = str(row[column_index]) if column_index < len(row) else ""
                 for paragraph in cell.paragraphs:
                     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    paragraph.paragraph_format.space_before = Pt(0)
+                    paragraph.paragraph_format.space_after = Pt(0)
+                    paragraph.paragraph_format.line_spacing = 0.9
                     for cell_run in paragraph.runs:
-                        _set_run_style(cell_run, size=7.2, bold=row_index == 0)
+                        _set_run_style(cell_run, size=table_font_size,
+                                       bold=row_index == 0)
                 if row_index == 0:
                     _set_cell_shading(cell, "D9EEF3")
+        for region in merges:
+            top = int(region.get("top", 0))
+            bottom = int(region.get("bottom", top + 1))
+            left = int(region.get("left", 0))
+            right = int(region.get("right", left + 1))
+            if top < 0 or left < 0 or bottom > len(rows) or right > columns:
+                continue
+            if bottom - top <= 1 and right - left <= 1:
+                continue
+            table.cell(top, left).merge(table.cell(bottom - 1, right - 1))
         after = sorted(
             (block for block in (page.get("outside_blocks") or [])
              if block.get("placement") in ("side", "after")),

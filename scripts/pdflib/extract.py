@@ -282,6 +282,7 @@ def _ocr_page(record, image_path, engine, *, source_route, table_mode):
         "blocks": native_blocks + extra_blocks,
         "outside_blocks": extra_blocks if accepted else [],
         "tables": [rows] if accepted else [],
+        "merges": [recon.get("quality", {}).get("merged_cells") or []] if accepted else [],
         "table_details": [{
             "rows": rows,
             "quality": recon.get("quality"),
@@ -541,6 +542,7 @@ def run(pdf_path, out_dir, formats=("md", "txt", "json", "xlsx", "docx", "csv"),
             "text": record.get("text", ""),
             "blocks": record.get("blocks", []),
             "tables": record.get("tables", []),
+            "merges": record.get("merges", []),
             "quality": record.get("quality"),
             "table_assessment": record.get("table_assessment"),
         } for record in records],
@@ -550,6 +552,7 @@ def run(pdf_path, out_dir, formats=("md", "txt", "json", "xlsx", "docx", "csv"),
     export.write_json(tables_json, [{
         "page": record["page"],
         "tables": record.get("tables", []),
+        "merges": record.get("merges", []),
     } for record in records])
     produced.append(str(tables_json))
     route_json = out_dir / "route.json"

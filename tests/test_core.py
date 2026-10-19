@@ -247,6 +247,44 @@ class CorePipelineTests(unittest.TestCase):
             text = "\n".join(paragraph.text for paragraph in document.paragraphs)
             self.assertIn("表单主标题", text)
 
+    def test_table_docx_applies_merged_regions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "merged.docx"
+            info = {
+                "pdf": "sample.pdf",
+                "page_count": 1,
+                "document_kind": "scanned",
+                "route": {"recommended_route": "scan-ocr"},
+                "warnings": [],
+            }
+            rows = [["合并标题", "", "", ""],
+                    ["甲", "", "乙", ""],
+                    ["", "", "", ""],
+                    ["", "", "", ""]]
+            page = {
+                "page": 1,
+                "tables": [rows],
+                "merges": [[
+                    {"top": 0, "bottom": 1, "left": 0, "right": 4},
+                    {"top": 1, "bottom": 4, "left": 0, "right": 1},
+                ]],
+                "outside_blocks": [],
+                "text": "",
+                "quality": {
+                    "merged_grid_used": True,
+                    "column_ratios": [0.25, 0.25, 0.25, 0.25],
+                    "row_ratios": [0.25, 0.25, 0.25, 0.25],
+                    "table_aspect": 1.0,
+                },
+                "width_pt": 595,
+                "height_pt": 842,
+            }
+            export.write_docx(
+                path, "sample", info, [page], pdf_path=Path("sample.pdf"),
+                mode="table")
+            table = Document(path).tables[0]
+            self.assertIs(table.cell(0, 0)._tc, table.cell(0, 3)._tc)
+
     def test_blank_page_is_not_sent_to_ocr(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "blank.pdf"
